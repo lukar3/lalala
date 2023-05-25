@@ -1,0 +1,61 @@
+%identifikacija kao i u zadatku 1
+%% prikupljanje podataka
+test=[1 1]; % testni signal, mora se definisati, da bi radio Simulink. U ovoj fazi se ne koristi signal=-1; % dovodimo slucajni signal
+var=100;
+j=3.5;i=1; % varijansa suma
+trajanje=1; % trajanje jednog odbirka suma [s] tfinal=500; % trajanje simulacije [s] sim('DC_ID.slx');
+% Simulink model mreze se moze generisati sa
+% gensim(netDCc,'solvermode','discrete','sampletime',T)
+%% referentni model
+trajanje=3; % eksperimentisati saparametrima 
+tfinal=500;
+sim('refmodel.slx') % promijeniti po potrebi refout=con2seq(refout.signals.values'); % podaci za obucavanje MRAC-a refin=con2seq(refin.signals.values');
+ind=1:length(refin); figure(1);
+plot(ind,cell2mat(refin),ind,cell2mat(refout))
+%%
+S2=1;d3=0:2;d4=1:2; % model kontrolera
+%%
+netMRAC = feedforwardnet([S2 1 S1]); % ovo je model citavog SAU-a netMRAC.layerConnect = [0 1 0 1;1 0 0 0;0 1 0 1;0 0 1 0]; netMRAC.outputs{4}.feedbackMode = 'closed'; netMRAC.layers{2}.transferFcn = 'purelin';
+netMRAC.layerWeights{3,4}.delays = d2; % mora se poklopiti za modelom DC-a netMRAC.layerWeights{3,2}.delays = d1;
+netMRAC.layerWeights{3,2}.learn = 0;
+netMRAC.layerWeights{3,4}.learn = 0;
+netMRAC.layerWeights{4,3}.learn = 0;
+netMRAC.biases{3}.learn = 0;
+netMRAC.biases{4}.learn = 0; % zadnja sva sloja ne obucavamo
+netMRAC.divideFcn = ''; netMRAC.inputs{1}.processFcns = {}; netMRAC.outputs{4}.processFcns = {};
+netMRAC.name = 'Model Reference Adaptive Control Network'; netMRAC.layerWeights{1,2}.delays = d4; % mora se poklopiti sa modelom kontolera dy=1:2;
+netMRAC.layerWeights{1,4}.delays = dy; % kontroler korisit samo jedan odbirak izlaza. moze se povecati
+netMRAC.inputWeights{1}.delays = d3; %% isto
+%% mora se prvo konfigurisati mreza, da bi mogli da mijenjamo njene parametre netMRAC = configure(netMRAC,refin,refout);
+%% kopiramo model DC-a netMRAC.LW{3,2} = netDCc.IW{1}; netMRAC.LW{3,4} = netDCc.LW{1,2};
+netMRAC.b{3} = netDCc.b{1}; netMRAC.LW{4,3} = netDCc.LW{2,1};
+netMRAC.b{4} = netDCc.b{2};
+%% ovo nije obavezno
+netMRAC.LW{2,1} = zeros(size(netMRAC.LW{2,1})); netMRAC.b{2} = 0;
+%% priprema podataka za obucavanje
+[x_tot,xi_tot,ai_tot,t_tot] = preparets(netMRAC,refin,{},refout); netMRAC.trainParam.min_grad = 1e-10; netMRAC.trainParam.epochs=500;
+netMRAC.trainParam.mu_max=1e20;
+[netMRAC,tr] = train(netMRAC,x_tot,t_tot,xi_tot,ai_tot);
+%% testiranje
+testin = skyline(1000,50,200,-.7,.7); testinseq = con2seq(testin);
+testoutseq = netMRAC(testinseq); testout = cell2mat(testoutseq); figure(3)
+plot([testin' testout'])
+%% Izdvajanje kontrolera iz citavog MRAC-a netC=narxnet(d3,d4,S2);
+netC.name = 'Kontroler'; netC.inputs{1}.processFcns = {}; netC.inputs{2}.processFcns = {}; netC.outputs{2}.processFcns = {}; netC=closeloop(netC); netC.numinputs=2;
+%% prvo konfigurisemo konttoler (dva ulaza)
+%% jedan ulaza je za r, a jedan ulaz moram dodati za mjereni izlaz(y) netC=configure(netC,[refin;refin],refout);
+netC.IW{1}=netMRAC.IW{1}; netC.LW{1,2}=netMRAC.LW{1,2};
+netC.LW{2,1}=netMRAC.LW{2,1};
+netC.b{1}=netMRAC.b{1};
+netC.b{2}=netMRAC.b{2};
+%% mora se rucno prikacati drugi ulaz netC.inputConnect(1,2)=1;
+netC.inputWeights{1,2}.delays = dy; % broj odbiraka izlaznog signala netC.IW{1,2}=netMRAC.LW{1,4};
+%% generisani model se dodaje u DC_MRAC.slx
+% gensim(netC,'solvermode','discrete','sampletime',T) 
+%crtaj.m
+sim('DC_MRAC.slx')
+boje=lines(10); close all
+plot(yref.time,yref.signals.values,'-x','linewidth',1,'markerindices',1:10:length(yref.time)), hold on
+plot(ymrac.time,ymrac.signals.values,'linewidth',1) ylabel('Odziv')
+plot(ypid.time,ypid.signals.values,'linewidth',1,'color',boje(4,:)) xlabel('Vrijeme [s]') legend('y_{ref}(t)','y_{mrac}(t)','y_{pid}(t)'), grid set(gcf,'units','centimeters','position',[10 10 14 4]);
+
